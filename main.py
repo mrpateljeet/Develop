@@ -1,55 +1,97 @@
 import pandas as pd
-import yfinance as yf
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+# Load historical data
+data = pd.read_csv('AMZN.csv')  # Replace 'apple_stock_data.csv' with your file name
 
-# Download historical data
-ticker = 'AAPL'
-start_date = '2020-01-01'
-end_date = '2023-01-01'
-data = yf.download(ticker, start=start_date, end=end_date)
+# Convert date to datetime format
+data['Date'] = pd.to_datetime(data['Date'])
 
-# Calculate Simple Moving Averages (SMA)
-data['SMA50'] = data['Close'].rolling(window=50).mean()
-data['SMA200'] = data['Close'].rolling(window=200).mean()
+# Calculate moving averages
+data['MA50'] = data['Close'].rolling(window=50).mean()
+data['MA200'] = data['Close'].rolling(window=200).mean()
 
-# Calculate Exponential Moving Averages (EMA)
-data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
-data['EMA200'] = data['Close'].ewm(span=200, adjust=False).mean()
+# Calculate RSI
+def calculate_rsi(data, window=14):
+    delta = data['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-# Define trading signals based on crossovers
-data['SMA_Signal'] = 0
-data['SMA_Signal'][50:] = np.where(data['SMA50'][50:] > data['SMA200'][50:], 1, -1)
+data['RSI'] = calculate_rsi(data)
 
-data['EMA_Signal'] = 0
-data['EMA_Signal'][50:] = np.where(data['EMA50'][50:] > data['EMA200'][50:], 1, -1)
+# Calculate MACD
+def calculate_macd(data, short_window=12, long_window=26):
+    short_ema = data['Close'].ewm(span=short_window, min_periods=1).mean()
+    long_ema = data['Close'].ewm(span=long_window, min_periods=1).mean()
+    macd = short_ema - long_ema
+    signal_line = macd.ewm(span=9, min_periods=1).mean()
+    return macd, signal_line
 
-# Backtesting (calculate returns)
-data['Daily_Return'] = data['Close'].pct_change()
+data['MACD'], data['Signal_Line'] = calculate_macd(data)
 
-# SMA strategy
-data['SMA_Strategy_Return'] = data['SMA_Signal'].shift(1) * data['Daily_Return']
+# Calculate %K (Stochastic Oscillator)
+def calculate_stochastic_oscillator(data, window=14):
+    low_min = data['Low'].rolling(window=window).min()
+    high_max = data['High'].rolling(window=window).max()
+    stochastic_oscillator = ((data['Close'] - low_min) / (high_max - low_min)) * 100
+    return stochastic_oscillator
 
-# EMA strategy
-data['EMA_Strategy_Return'] = data['EMA_Signal'].shift(1) * data['Daily_Return']
+data['%K'] = calculate_stochastic_oscillator(data)
 
-# Export data to CSV
-csv_filename = 'trading_strategy_results.csv'
-data.to_csv(csv_filename, index=True)
+# Simple Moving Average Crossover Strategy for buying and selling points
+data['Signal'] = 0
+data['Position'] = 0
 
-# Visualize
-plt.figure(figsize=(12, 8))
-plt.plot(data['Close'], label='Close Price', alpha=0.5)
-plt.plot(data['SMA50'], label='SMA50')
-plt.plot(data['SMA200'], label='SMA200')
-plt.plot(data[data['SMA_Signal'] == 1].index, data['SMA50'][data['SMA_Signal'] == 1], '^', markersize=10, color='g', label='SMA Buy Signal')
-plt.plot(data[data['SMA_Signal'] == -1].index, data['SMA50'][data['SMA_Signal'] == -1], 'v', markersize=10, color='r', label='SMA Sell Signal')
+data['Signal'][50:] = np.where(data['MA50'][50:] > data['MA200'][50:], 1, 0)
+data['Position'] = data['Signal'].diff()
 
-plt.plot(data['EMA50'], label='EMA50')
-plt.plot(data['EMA200'], label='EMA200')
-plt.plot(data[data['EMA_Signal'] == 1].index, data['EMA50'][data['EMA_Signal'] == 1], '^', markersize=10, color='b', label='EMA Buy Signal')
-plt.plot(data[data['EMA_Signal'] == -1].index, data['EMA50'][data['EMA_Signal'] == -1], 'v', markersize=10, color='y', label='EMA Sell Signal')
+# Calculate profit and loss
+initial_cash = 10000  # Initial investment amount
+cash = initial_cash
+shares = 0
+buy_price = 0
+sell_price = 0
+transactions = []
 
-plt.title(f'{ticker} Double Moving Averages Crossover System')
+for index, row in data.iterrows():
+    if row['Position'] == 1:  # Buy signal
+        if cash >= row['Close']:  # Check if enough cash to buy
+            shares += cash // row['Close']  # Buy as many shares as possible with available cash
+            cash -= shares * row['Close']  # Deduct spent cash
+            buy_price = row['Close']
+            transactions.append(('BUY', row['Date'], row['Close'], shares))
+    elif row['Position'] == -1:  # Sell signal
+        if shares > 0:  # Check if there are shares to sell
+            cash += shares * row['Close']  # Add cash from selling shares
+            sell_price = row['Close']
+            transactions.append(('SELL', row['Date'], row['Close'], shares))
+            shares = 0
+
+# Calculate final value of investment
+final_value = cash + (shares * data.iloc[-1]['Close'])
+profit_loss = final_value - initial_cash
+
+# Print profit/loss
+print("Initial Investment: $", initial_cash)
+print("Final Value: $", round(final_value, 2))
+print("Profit/Loss: $", round(profit_loss, 2))
+
+# Plotting
+plt.figure(figsize=(12, 6))
+plt.plot(data['Date'], data['Close'], label='Close Price')
+plt.plot(data['Date'], data['MA50'], label='50-Day MA')
+plt.plot(data['Date'], data['MA200'], label='200-Day MA')
+plt.scatter(data[data['Position'] == 1]['Date'], data[data['Position'] == 1]['Close'], marker='^', color='g', label='Buy Signal')
+plt.scatter(data[data['Position'] == -1]['Date'], data[data['Position'] == -1]['Close'], marker='v', color='r', label='Sell Signal')
 plt.legend()
+plt.title('Apple Stock Price with Moving Averages and Buy/Sell Signals')
+plt.xlabel('Date')
+plt.ylabel('Price')
 plt.show()
+
+print("Transactions:")
+for trans in transactions:
+    print(trans)
